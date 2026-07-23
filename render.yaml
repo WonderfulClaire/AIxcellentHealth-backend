@@ -1,0 +1,29 @@
+# Render 一键部署配置（推荐，免费版可用）
+# 部署方式：把本仓库连到 Render（New → Web Service → 连 GitHub 选此仓库），
+# 或直接在 Render 控制台粘贴此 yaml。Render 会自动识别并执行。
+services:
+  - type: web
+    name: aixcellent-backend
+    runtime: node
+    plan: free
+    region: oregon        # 可改成 singapore 就近
+    branch: main
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "10000"
+      # 自动生成随机强密钥（也可手动覆盖）
+      - key: JWT_SECRET
+        generateValue: true
+      # 部署时务必手动设置一个强密码，否则使用默认弱密码会有安全警告
+      - key: ADMIN_EMAIL
+        value: admin@aixcellent.health
+      - key: ADMIN_PASSWORD
+        sync: false        # 控制台手动填写，不要留空
+      # 允许前端站点跨域访问，部署后改成你的 GitHub Pages 地址
+      - key: CORS_ORIGIN
+        sync: false        # 例如 https://wonderfulclaire.github.io
