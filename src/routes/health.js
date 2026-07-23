@@ -83,4 +83,27 @@ router.get('/summary', (req, res) => {
   res.json({ latest, avg });
 });
 
+// 自助导出：返回本人全部健康数据（个保法「可携带权」）
+router.get('/export', (req, res) => {
+  const u = req.user.sub;
+  const profile = db.prepare('SELECT * FROM profiles WHERE user_id = ?').get(u);
+  const records = db
+    .prepare('SELECT * FROM daily_records WHERE user_id = ? ORDER BY date DESC')
+    .all(u);
+  res.json({
+    exported_at: new Date().toISOString(),
+    schema_version: 1,
+    profile: profile || null,
+    records,
+  });
+});
+
+// 自助删除：清除本人全部健康数据（保留账号；个保法「删除权」）
+router.delete('/data', (req, res) => {
+  const u = req.user.sub;
+  db.prepare('DELETE FROM daily_records WHERE user_id = ?').run(u);
+  db.prepare('DELETE FROM profiles WHERE user_id = ?').run(u);
+  res.json({ ok: true, deleted_records: true, deleted_profile: true });
+});
+
 export default router;
