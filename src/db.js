@@ -53,6 +53,30 @@ db.exec(`
   );
 
   CREATE INDEX IF NOT EXISTS idx_records_user_date ON daily_records (user_id, date DESC);
+
+  -- 可穿戴设备汇总（手表/手环/Apple Watch 经快捷指令同步）
+  -- 每条 = 一天的可穿戴数据：心率 / 步数 / 睡眠 / 血氧 / HRV / 活动能量。
+  -- source: ble(网页蓝牙实时) | manual(手动录入) | import(文件导入) | apple_health(快捷指令同步)
+  CREATE TABLE IF NOT EXISTS wearable (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    date          TEXT NOT NULL,
+    source        TEXT NOT NULL DEFAULT 'manual',
+    device        TEXT,
+    resting_hr    REAL,
+    avg_hr        REAL,
+    max_hr        REAL,
+    steps         INTEGER,
+    sleep_hours   REAL,
+    spo2          REAL,
+    hrv           REAL,
+    active_energy REAL,
+    note          TEXT,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (user_id, date, source)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_wearable_user_date ON wearable (user_id, date DESC);
 `);
 
 // 启动时确保默认管理员存在
