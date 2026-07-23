@@ -90,12 +90,154 @@ router.get('/export', (req, res) => {
   const records = db
     .prepare('SELECT * FROM daily_records WHERE user_id = ? ORDER BY date DESC')
     .all(u);
+  const wearable = db
+    .prepare('SELECT * FROM wearable WHERE user_id = ? ORDER BY date DESC')
+    .all(u);
   res.json({
     exported_at: new Date().toISOString(),
     schema_version: 1,
     profile: profile || null,
     records,
+    wearable,
   });
+});
+
+/* ── 可穿戴设备数据（手表 / 手环 / Apple Watch 经快捷指令同步）──
+ * 每条 = 一天的可穿戴汇总。来源 source: ble | manual | import | apple_health。
+ * 前端 healthStore 已调用本接口；后端部署后即从 localStorage 无缝切换为云端。 */
+
+// 读取本人的可穿戴数据
+router.get('/wearable', (req, res) => {
+  const rows = db
+    .prepare('SELECT * FROM wearable WHERE user_id = ? ORDER BY date DESC LIMIT 200')
+    .all(req.user.sub);
+  res.json({ wearable: rows });
+});
+
+// 写入/更新一条或多条（upsert：同一 user+date+source 覆盖）
+router.post('/wearable', (req, res) => {
+  const body = Array.isArray(req.body) ? req.body : [req.body];
+  const u = req.user.sub;
+  const stmt = db.prepare(`
+    INSERT INTO wearable (user_id, date, source, device, resting_hr, avg_hr, max_hr, steps, sleep_hours, spo2, hrv, active_energy, note)
+    VALUES (@user_id, @date, @source, @device, @resting_hr, @avg_hr, @max_hr, @steps, @sleep_hours, @spo2, @hrv, @active_energy, @note)
+    ON CONFLICT(user_id, date, source) DO UPDATE SET
+      device=excluded.device, resting_hr=excluded.resting_hr, avg_hr=excluded.avg_hr,
+      max_hr=excluded.max_hr, steps=excluded.steps, sleep_hours=excluded.sleep_hours,
+      spo2=excluded.spo2, hrv=excluded.hrv, active_energy=excluded.active_energy, note=excluded.note
+  `);
+  const out = [];
+  const tx = db.transaction((items) => {
+    for (const it of items) {
+      if (!it || !it.date) continue;
+      out.push(
+        stmt.run({
+          user_id: u,
+          date: it.date,
+          source: it.source || 'import',
+          device: it.device || null,
+          resting_hr: num(it.resting_hr),
+          avg_hr: num(it.avg_hr),
+          max_hr: num(it.max_hr),
+          steps: int(it.steps),
+          sleep_hours: num(it.sleep_hours),
+          spo2: num(it.spo2),
+          hrv: num(it.hrv),
+          active_energy: num(it.active_energy ?? it.active_energy_kcal),
+          note: it.note || null,
+        }).lastInsertRowid
+      );
+    }
+  });
+  tx(body);
+  res.json({ ok: true, saved: out.length });
+});
+
+// 快捷指令同步入口：接收 { records:[{date,resting_hr,avg_hr,max_hr,steps,sleep_hours,spo2,hrv,active_energy_kcal}], workouts:[...] }
+// workouts 可含 hr_samples 数组，自动推导 avg/max 心率。同一天会被合并为一条 apple_health 记录（避免覆盖）。
+router.post('/sync', (req, res) => {
+  const u = req.user.sub;
+  const payload = req.body || {};
+  const records = Array.isArray(payload) ? payload : payload.records || [];
+  const workouts = payload.workouts || [];
+  const byDate = new Map();
+
+  const get = (date) => {
+    if (!byDate.has(date)) {
+      byDate.set(date, {
+        date, source: 'apple_health', device: 'Apple Watch',
+        resting_hr: null, avg_hr: null, max_hr: null,
+        steps: null, sleep_hours: null, spo2: null, hrv: null,
+        active_energy: null, note: null,
+      });
+    }
+    return byDate.get(date);
+  };
+  const maxOf = (a, b) => (a == null ? b : b == null ? a : Math.max(a, b));
+
+  for (const r of records) {
+    if (!r || !r.date) continue;
+    const e = get(r.date);
+    e.resting_hr = num(r.resting_hr) ?? e.resting_hr;
+    e.avg_hr = num(r.avg_hr) ?? e.avg_hr;
+    e.max_hr = num(r.max_hr) ?? e.max_hr;
+    e.steps = num(r.steps) ?? e.steps;
+    e.sleep_hours = num(r.sleep_hours) ?? e.sleep_hours;
+    e.spo2 = num(r.spo2) ?? e.spo2;
+    e.hrv = num(r.hrv) ?? e.hrv;
+    e.active_energy = maxOf(e.active_energy, num(r.active_energy ?? r.active_energy_kcal));
+    e.note = r.note || e.note;
+  }
+
+  for (const w of workouts) {
+    if (!w || !w.date) continue;
+    const e = get(w.date);
+    let avg = num(w.avg_hr);
+    let max = num(w.max_hr);
+    if (Array.isArray(w.hr_samples) && w.hr_samples.length) {
+      const vals = w.hr_samples.filter((x) => typeof x === 'number' && x > 0);
+      if (vals.length) {
+        avg = Math.round(vals.reduce((a, b) => a + b, 0) / vals.length);
+        max = Math.max(...vals);
+      }
+    }
+    e.avg_hr = e.avg_hr ?? avg;
+    e.max_hr = e.max_hr ?? max;
+    e.active_energy = maxOf(e.active_energy, num(w.active_energy ?? w.active_energy_kcal));
+    const wnote = `${w.type || '训练'} ${w.duration_min ? w.duration_min + 'min' : ''}`.trim();
+    e.note = e.note ? `${e.note} · ${wnote}` : wnote;
+  }
+
+  const items = [...byDate.values()];
+  const stmt = db.prepare(`
+    INSERT INTO wearable (user_id, date, source, device, resting_hr, avg_hr, max_hr, steps, sleep_hours, spo2, hrv, active_energy, note)
+    VALUES (@user_id, @date, @source, @device, @resting_hr, @avg_hr, @max_hr, @steps, @sleep_hours, @spo2, @hrv, @active_energy, @note)
+    ON CONFLICT(user_id, date, source) DO UPDATE SET
+      device=excluded.device, resting_hr=excluded.resting_hr, avg_hr=excluded.avg_hr,
+      max_hr=excluded.max_hr, steps=excluded.steps, sleep_hours=excluded.sleep_hours,
+      spo2=excluded.spo2, hrv=excluded.hrv, active_energy=excluded.active_energy, note=excluded.note
+  `);
+  const tx = db.transaction((list) => {
+    for (const it of list) {
+      stmt.run({
+        user_id: u,
+        date: it.date,
+        source: it.source,
+        device: it.device,
+        resting_hr: num(it.resting_hr),
+        avg_hr: num(it.avg_hr),
+        max_hr: num(it.max_hr),
+        steps: int(it.steps),
+        sleep_hours: num(it.sleep_hours),
+        spo2: num(it.spo2),
+        hrv: num(it.hrv),
+        active_energy: num(it.active_energy),
+        note: it.note,
+      });
+    }
+  });
+  tx(items);
+  res.json({ ok: true, saved: items.length });
 });
 
 // 自助删除：清除本人全部健康数据（保留账号；个保法「删除权」）
