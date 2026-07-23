@@ -1,0 +1,22 @@
+{
+  "name": "aixcellent-health-backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AIxcellent 私享管家 —— 用户账户、健康档案与统一管理后台的后端服务",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "better-sqlite3": "^11.3.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "jsonwebtoken": "^9.0.2"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
