@@ -67,6 +67,12 @@ function ensureAdmin() {
     ).run(email, hash, '系统管理员');
     console.log(`[init] 已创建默认管理员账号: ${email}`);
   }
+  // 安全提示：默认/弱管理员密码必须在部署时通过环境变量覆盖
+  if (password === 'change-me' || password.length < 8) {
+    console.warn(
+      '\n⚠️  [安全警告] 管理员密码为默认值或弱密码，请务必通过环境变量 ADMIN_PASSWORD 设置一个强密码后再对外提供服务！\n'
+    );
+  }
 }
 ensureAdmin();
 
