@@ -2,10 +2,13 @@ import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import db from '../db.js';
-import { JWT_SECRET } from '../middleware/auth.js';
+import { JWT_SECRET, authenticate } from '../middleware/auth.js';
 
 const router = Router();
 const JWT_EXPIRES = process.env.JWT_EXPIRES_IN || '7d';
+
+// /me 下的接口均需登录态
+router.use('/me', authenticate);
 
 function publicUser(u) {
   return { id: u.id, email: u.email, name: u.name, role: u.role, status: u.status };
@@ -64,6 +67,13 @@ router.get('/me', (req, res) => {
   } catch {
     return res.status(401).json({ error: '令牌无效或已过期' });
   }
+});
+
+// 自助注销：删除本人账号（profiles / daily_records 因 ON DELETE CASCADE 一并清除）
+router.delete('/me', (req, res) => {
+  const u = req.user.sub;
+  db.prepare('DELETE FROM users WHERE id = ?').run(u);
+  res.json({ ok: true, deleted: u });
 });
 
 export default router;
