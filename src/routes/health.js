@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import db from '../db.js';
+import { getTodayTip } from '../dailyPush.js';
 
 const router = Router();
 
@@ -15,6 +16,17 @@ function int(v) {
 router.get('/profile', (req, res) => {
   const p = db.prepare('SELECT * FROM profiles WHERE user_id = ?').get(req.user.sub);
   res.json({ profile: p || null });
+});
+
+// 今日健康小推送（按用户画像 + 近期习惯筛选，幂等；前端用于站内卡片）
+router.get('/daily-tip', (req, res) => {
+  try {
+    const tip = getTodayTip(req.user.sub);
+    res.json({ tip });
+  } catch (err) {
+    console.error('[daily-tip]', err);
+    res.status(500).json({ error: '生成今日推送失败' });
+  }
 });
 
 // 写入/更新自己的健康档案（建档：身体、作息、目标与限制）

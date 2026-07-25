@@ -25,6 +25,7 @@
 | 健康档案 | 建档：身高体重、出生年、性别、目标、限制（按用户隔离） |
 | 每日记录 | 睡眠 / 压力 / 训练负荷 / 体态评分 / 精力 / 备注（按日期 upsert） |
 | 数据聚合 | 最新记录 + 平均值概览 |
+| 每日健康小推送 | 按用户画像（年龄分段 / 目标 / 限制）与近期习惯，从内容库筛选「今日最相关」的一条健康小知识；站内卡片（按需生成、幂等去重）+ 可选邮件推送（管理员定时触发） |
 | 管理后台 | 注册用户数、今日活跃、今日新增、记录总数；用户列表（搜索 / 分页）、详情、启用 / 停用、删除（级联清理其档案与记录） |
 | 角色隔离 | `user` 仅能读写自己的数据；`admin` 才能访问 `/api/admin/*`（中间件 `requireAdmin` 强制） |
 
@@ -37,14 +38,20 @@
 ├── src/
 │   ├── server.js            # 入口：挂载路由、CORS、静态后台
 │   ├── db.js                # SQLite 连接 + 自动建表 + 初始化管理员
+│   ├── dailyPushEngine.js   # 推送引擎：内容库 TIPS + 分段/匹配/轮转算法（纯逻辑可单测）
+│   ├── dailyPush.js         # 接入 DB 与邮件：getTodayTip / runDailyPush
 │   ├── middleware/auth.js   # authenticate / requireAdmin / JWT_SECRET
 │   └── routes/
 │       ├── auth.js          # /api/auth/* 注册登录
-│       ├── health.js        # /api/health/* 档案与记录（需登录）
-│       └── admin.js         # /api/admin/* 统一管理（需管理员）
+│       ├── health.js        # /api/health/* 档案、记录、每日推送（需登录）
+│       └── admin.js         # /api/admin/* 统一管理 + 触发邮件推送（需管理员）
 ├── public/admin.html        # 黑金风管理后台（纯前端，调用上述 API）
+├── public/daily-tip.html    # 每日健康小推送演示页（粘贴 JWT 试用）
+├── scripts/dailyPush.js     # 独立运行器（crontab / timer 调用）
+├── tests/                   # 引擎单测 + 端到端冒烟测试
+├── .github/workflows/daily-push.yml  # 定时触发邮件推送（GitHub Actions 模板）
 ├── schema.sql              # Postgres 兼容结构参考
-├── .env.example            # 环境变量模板
+├── .env.example            # 环境变量模板（含 SMTP_*）
 └── package.json
 ```
 
@@ -117,10 +124,52 @@ npm start                     # 默认 http://localhost:3000
 | GET/PUT | `/api/health/profile` | 登录(本人) | 健康档案 |
 | GET/POST | `/api/health/records` | 登录(本人) | 每日记录 |
 | GET  | `/api/health/summary` | 登录(本人) | 聚合概览 |
+| GET  | `/api/health/daily-tip` | 登录(本人) | 今日健康小推送（按画像筛选，幂等） |
 | GET  | `/api/admin/stats` | 管理员 | 全站统计 |
 | GET  | `/api/admin/users` | 管理员 | 用户列表(分页/搜索) |
 | GET  | `/api/admin/users/:id` | 管理员 | 用户详情+记录 |
 | PUT  | `/api/admin/users/:id/status` | 管理员 | 启用/停用 |
 | DELETE | `/api/admin/users/:id` | 管理员 | 删除(级联) |
+| POST | `/api/admin/daily-push` | 管理员 | 手动触发邮件版每日健康小推送（需 SMTP_*） |
 
 所有受保护接口需在 Header 携带 `Authorization: Bearer <token>`。
+
+---
+
+## 每日健康小推送（Daily Health Push）
+
+按**用户画像 + 近期习惯**主动推送一条最相关的健康小知识，而不是千篇一律的养生文。
+
+### 它怎么选？
+
+1. **年龄分段**：`birth_year` → `elderly(≥60)` / `middle(40–59)` / `young(<40)` / `all`。
+   - 中老年人（示例）：「力量训练 vs 抗阻训练对老年人肌肉量」等带权威来源的研究向内容。
+   - 年轻人（示例）：「用 90 分钟周期工作，精力比硬扛更持久」等高质量休息 / 高精力工作向内容。
+2. **目标匹配**：`profiles.goals`（如「增肌」「改善睡眠」「提升精力」）与内容标签 / 关键词子串匹配加权。
+3. **限制规避**：`profiles.restrictions`（如「膝盖不适」「高血压」）命中 `avoidIf` 的 tip 直接排除，命中 `boostIf` 的加权——例如「高血压」用户不会被推 HIIT。
+4. **习惯触发**：近期 `daily_records`（睡眠 < 6.5h、压力 high、精力 ≤ 2）触发对应主题加权。
+5. **去重 + 轮转**：排除近 7 天已推过的 tip；同一天对同用户确定性稳定，跨天轮换，避免短期内重复。
+
+内容库在 `src/dailyPushEngine.js` 的 `TIPS`（当前 20+ 条，带 `source` 来源），可直接增删改。
+
+### 两种投放渠道
+
+| 渠道 | 触发方式 | 说明 |
+|------|----------|------|
+| 站内卡片 `inapp` | 前端调用 `GET /api/health/daily-tip` | 按需生成、幂等（同一天只算一次，落 `daily_pushes` 表） |
+| 邮件 `email` | 管理员触发 `POST /api/admin/daily-push` | 需配置 `SMTP_*`；未配置则仅记录推送意图、不发信 |
+
+前端对应组件见 `AIxcellentSport-Agent/components/DailyTipCard.tsx`（drop-in，未登录时自动隐藏）。
+
+### 定时推送怎么跑？
+
+- **部署服务器上**：`npm run daily-push`（建议用 crontab / systemd timer 每天固定时间，如北京 07:00 → `0 23 * * *`）。
+- **GitHub Actions 模板**：`.github/workflows/daily-push.yml` 每天 UTC 23:00 调用已部署后端的受保护接口（需在仓库 Secrets 配 `API_BASE` 与 `ADMIN_TOKEN`）。
+
+### 演示页
+
+启动后端后访问 `/daily-tip.html`，粘贴 JWT 即可看到「按画像筛选」的推送卡片效果。
+
+---
+
+

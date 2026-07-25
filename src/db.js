@@ -77,6 +77,21 @@ db.exec(`
   );
 
   CREATE INDEX IF NOT EXISTS idx_wearable_user_date ON wearable (user_id, date DESC);
+
+  -- 每日健康小推送记录（站内卡片 / 邮件；按 user+date+channel 幂等去重）
+  CREATE TABLE IF NOT EXISTS daily_pushes (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    date      TEXT NOT NULL,
+    tip_id    TEXT NOT NULL,
+    channel   TEXT NOT NULL DEFAULT 'inapp',  -- 'inapp' | 'email'
+    title     TEXT,
+    body      TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (user_id, date, channel)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_pushes_user_date ON daily_pushes (user_id, date DESC);
 `);
 
 // 启动时确保默认管理员存在

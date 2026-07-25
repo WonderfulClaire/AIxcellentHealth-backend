@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import db from '../db.js';
+import { runDailyPush } from '../dailyPush.js';
 
 const router = Router();
 
@@ -64,6 +65,18 @@ router.delete('/users/:id', (req, res) => {
   const id = Number(req.params.id);
   db.prepare('DELETE FROM users WHERE id = ?').run(id);
   res.json({ ok: true, deleted: id });
+});
+
+// 手动触发「每日健康小推送」邮件任务（通常由定时调度调用）
+// 需配置 SMTP_* 才会真正发信；未配置则仅记录推送意图并返回 smtpEnabled:false
+router.post('/daily-push', async (req, res) => {
+  try {
+    const result = await runDailyPush();
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error('[admin/daily-push]', err);
+    res.status(500).json({ error: String(err?.message || err) });
+  }
 });
 
 export default router;

@@ -45,3 +45,18 @@ CREATE TABLE daily_records (
 
 CREATE INDEX idx_records_user_date ON daily_records (user_id, date DESC);
 CREATE INDEX idx_users_email ON users (email);
+
+-- 每日健康小推送记录（站内卡片 / 邮件；按 user+date+channel 幂等去重）
+CREATE TABLE daily_pushes (
+  id        SERIAL PRIMARY KEY,
+  user_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  date      DATE NOT NULL,
+  tip_id    TEXT NOT NULL,
+  channel   TEXT NOT NULL DEFAULT 'inapp',  -- 'inapp' | 'email'
+  title     TEXT,
+  body      TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (user_id, date, channel)
+);
+
+CREATE INDEX idx_pushes_user_date ON daily_pushes (user_id, date DESC);
