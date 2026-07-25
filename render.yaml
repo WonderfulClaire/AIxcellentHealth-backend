@@ -19,11 +19,11 @@ services:
       # 自动生成随机强密钥（也可手动覆盖）
       - key: JWT_SECRET
         generateValue: true
-      # 部署时务必手动设置一个强密码，否则使用默认弱密码会有安全警告
       - key: ADMIN_EMAIL
         value: admin@aixcellent.health
+      # 自动生成强随机密码；部署后可在 Render 控制台 Environment 页查看或修改
       - key: ADMIN_PASSWORD
-        sync: false        # 控制台手动填写，不要留空
-      # 允许前端站点跨域访问，部署后改成你的 GitHub Pages 地址
+        generateValue: true
+      # 允许前端站点跨域访问（GitHub Pages 域名）
       - key: CORS_ORIGIN
-        sync: false        # 例如 https://wonderfulclaire.github.io
+        value: https://wonderfulclaire.github.io
