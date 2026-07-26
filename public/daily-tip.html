@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AIxcellent · 每日健康小推送 Demo</title>
+  <style>
+    :root { --acid:#b7ff2a; --ink:#071521; --muted:#667f92; --line:rgba(7,21,33,.13); --cream:#f3f7f8; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: Arial, Helvetica, sans-serif; color:var(--ink); background:var(--cream); }
+    .wrap { max-width: 760px; margin: 0 auto; padding: 40px 20px 64px; }
+    h1 { font-size: 26px; letter-spacing:-.02em; margin: 0 0 6px; }
+    .sub { color: var(--muted); font-size: 14px; margin: 0 0 24px; line-height:1.6; }
+    .panel { border:1px solid var(--line); border-radius:14px; background:#fff; padding:18px; }
+    label { display:block; font-size:12px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; margin:14px 0 6px; }
+    input { width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:10px; font-size:14px; }
+    button { margin-top:16px; padding:11px 18px; border:2px solid var(--ink); background:var(--acid); font-weight:800; cursor:pointer; border-radius:10px; box-shadow:3px 3px 0 var(--ink); }
+    button:active { transform: translate(1px,1px); box-shadow:2px 2px 0 var(--ink); }
+    .card { margin-top:22px; display:flex; gap:14px; align-items:flex-start; border:1px solid var(--line); border-left:5px solid var(--acid); border-radius:14px; background:#fff; padding:18px 20px; }
+    .card .em { font-size:32px; line-height:1; }
+    .card h3 { margin:0 0 8px; font-size:18px; }
+    .card p { margin:0; color:#2b3a47; font-size:14px; line-height:1.7; }
+    .card .src { margin-top:10px; color:#9aa9b5; font-size:12px; }
+    pre { margin-top:18px; background:#071521; color:#cfe; padding:14px; border-radius:10px; font-size:12px; overflow:auto; max-height:240px; }
+    .hint { color:var(--muted); font-size:12px; margin-top:8px; }
+    .err { color:#c0392b; font-size:13px; margin-top:12px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>🌿 每日健康小推送 · Demo</h1>
+    <p class="sub">
+      这是后端 <code>GET /api/health/daily-tip</code> 的演示页。登录后把 JWT 粘贴进来即可看到
+      "按你的画像 + 近期习惯"筛选出的今日推送。未登录时不展示，对本地优先主流程零侵入。
+    </p>
+
+    <div class="panel">
+      <label for="base">后端地址（可选，默认同源）</label>
+      <input id="base" placeholder="https://your-backend.onrender.com" />
+
+      <label for="token">JWT（Bearer Token）</label>
+      <input id="token" placeholder="粘贴登录返回的 token" />
+      <div class="hint">提示：可用 <code>POST /api/auth/login</code> 拿 token；演示仅存于本页内存，不会上传第三方。</div>
+
+      <button id="go">获取今日推送</button>
+      <div id="err" class="err"></div>
+    </div>
+
+    <div id="result"></div>
+    <pre id="raw" style="display:none"></pre>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    $('go').addEventListener('click', async () => {
+      const base = $('base').value.trim().replace(/\/$/, '');
+      const token = $('token').value.trim();
+      $('err').textContent = '';
+      $('raw').style.display = 'none';
+      $('result').innerHTML = '';
+      if (!token) { $('err').textContent = '请先粘贴 JWT。'; return; }
+      try {
+        const res = await fetch((base || '') + '/api/health/daily-tip', {
+          headers: { Authorization: 'Bearer ' + token },
+        });
+        const data = await res.json();
+        $('raw').style.display = 'block';
+        $('raw').textContent = JSON.stringify(data, null, 2);
+        const tip = data && data.tip;
+        if (!tip) { $('err').textContent = '未返回推送：' + (data.error || '未知原因'); return; }
+        $('result').innerHTML = `
+          <div class="card">
+            <div class="em">${tip.emoji || '🌿'}</div>
+            <div>
+              <h3>${escapeHtml(tip.title)}</h3>
+              <p>${escapeHtml(tip.body)}</p>
+              ${tip.source ? `<div class="src">来源：${escapeHtml(tip.source)}</div>` : ''}
+            </div>
+          </div>`;
+      } catch (e) {
+        $('err').textContent = '请求失败：' + (e && e.message ? e.message : e);
+      }
+    });
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+    }
+  </script>
+</body>
+</html>

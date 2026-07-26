@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AIxcellent 私享管家 · 统一管理后台</title>
+<style>
+  :root{
+    --cream:#0B0B0D; --surface:#15151a; --ink:#ECE7D8; --muted:#a7a297;
+    --gold:#D4AF37; --gold-grad:linear-gradient(135deg,#B8860B,#F4D27A,#D4AF37);
+    --line:rgba(212,175,55,.18); --danger:#E5484D;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--cream);color:var(--ink);
+    font-family:"Inter","Noto Sans SC",system-ui,sans-serif;min-height:100vh}
+  .wrap{max-width:1080px;margin:0 auto;padding:40px 24px}
+  .brand{display:flex;align-items:center;gap:12px;margin-bottom:28px}
+  .brand .mark{width:34px;height:34px;border-radius:9px;background:var(--gold-grad);
+    display:grid;place-items:center;color:#0B0B0D;font-weight:800;font-size:14px}
+  .brand h1{font-size:20px;margin:0;letter-spacing:-.02em}
+  .brand small{color:var(--muted);font-weight:400}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:16px;
+    padding:26px;margin-bottom:22px;box-shadow:0 8px 30px rgba(0,0,0,.35)}
+  h2{font-size:18px;margin:0 0 16px;letter-spacing:-.01em}
+  .grid{display:grid;gap:14px}
+  .grid.s4{grid-template-columns:repeat(4,1fr)}
+  .stat{background:linear-gradient(135deg,rgba(212,175,55,.10),rgba(212,175,55,.02));
+    border:1px solid var(--line);border-radius:12px;padding:16px}
+  .stat b{display:block;font-size:26px;background:var(--gold-grad);-webkit-background-clip:text;
+    background-clip:text;-webkit-text-fill-color:transparent;font-weight:800}
+  .stat span{color:var(--muted);font-size:12px}
+  input,button{font:inherit}
+  input{padding:11px 14px;border-radius:10px;border:1px solid var(--line);
+    background:#0e0e12;color:var(--ink);width:100%}
+  input:focus{outline:none;border-color:var(--gold)}
+  button{cursor:pointer;border:0;border-radius:10px;padding:11px 18px;font-weight:600}
+  .btn-gold{background:var(--gold-grad);color:#0B0B0D}
+  .btn-ghost{background:transparent;color:var(--gold);border:1px solid var(--line)}
+  .btn-danger{background:transparent;color:var(--danger);border:1px solid rgba(229,72,77,.4)}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th,td{text-align:left;padding:11px 10px;border-bottom:1px solid rgba(212,175,55,.10)}
+  th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+  .pill{padding:2px 10px;border-radius:20px;font-size:12px;font-weight:600}
+  .pill.active{background:rgba(63,185,138,.15);color:#3FB98A}
+  .pill.disabled{background:rgba(229,72,77,.15);color:var(--danger)}
+  .pill.role{background:rgba(212,175,55,.15);color:var(--gold)}
+  .hide{display:none}
+  .muted{color:var(--muted);font-size:13px}
+  a{color:var(--gold)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand">
+    <div class="mark">✦</div>
+    <div><h1>AIxcellent 私享管家</h1><small>统一管理后台</small></div>
+  </div>
+
+  <!-- 登录 -->
+  <section id="login" class="card">
+    <h2>管理员登录</h2>
+    <div class="grid" style="max-width:360px">
+      <input id="email" type="email" placeholder="管理员邮箱" />
+      <input id="password" type="password" placeholder="密码" />
+      <button class="btn-gold" onclick="doLogin()">登录</button>
+      <div id="loginMsg" class="muted"></div>
+    </div>
+  </section>
+
+  <!-- 控制台 -->
+  <section id="console" class="card hide">
+    <div class="row" style="justify-content:space-between">
+      <h2 style="margin:0">总览</h2>
+      <button class="btn-ghost" onclick="logout()">退出登录</button>
+    </div>
+    <div id="stats" class="grid s4" style="margin-top:16px"></div>
+  </section>
+
+  <section id="usersCard" class="card hide">
+    <div class="row" style="justify-content:space-between;margin-bottom:14px">
+      <h2 style="margin:0">用户管理</h2>
+      <div class="row">
+        <input id="search" placeholder="搜索邮箱 / 姓名" style="width:220px" oninput="loadUsers(1)" />
+      </div>
+    </div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>ID</th><th>邮箱</th><th>姓名</th><th>角色</th><th>状态</th><th>注册时间</th><th>操作</th></tr></thead>
+        <tbody id="userRows"></tbody>
+      </table>
+    </div>
+    <div class="row" style="justify-content:space-between;margin-top:14px">
+      <span id="pageInfo" class="muted"></span>
+      <div class="row">
+        <button class="btn-ghost" onclick="prevPage()">上一页</button>
+        <button class="btn-ghost" onclick="nextPage()">下一页</button>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+const API = '';
+let token = localStorage.getItem('aix_token') || '';
+let page = 1;
+
+async function api(path, opts = {}) {
+  const res = await fetch(API + path, {
+    ...opts,
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}), ...(opts.headers||{}) }
+  });
+  if (res.status === 401) { logout(); throw new Error('登录失效'); }
+  return res.json();
+}
+
+async function doLogin() {
+  const msg = document.getElementById('loginMsg');
+  msg.textContent = '登录中…';
+  try {
+    const r = await fetch(API + '/api/auth/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email.value, password: password.value })
+    });
+    const data = await r.json();
+    if (!r.ok) { msg.textContent = data.error || '登录失败'; return; }
+    token = data.token; localStorage.setItem('aix_token', token);
+    showConsole();
+  } catch (e) { msg.textContent = e.message; }
+}
+
+function logout() {
+  token = ''; localStorage.removeItem('aix_token');
+  document.getElementById('console').classList.add('hide');
+  document.getElementById('usersCard').classList.add('hide');
+  document.getElementById('login').classList.remove('hide');
+}
+
+function showConsole() {
+  document.getElementById('login').classList.add('hide');
+  document.getElementById('console').classList.remove('hide');
+  document.getElementById('usersCard').classList.remove('hide');
+  loadStats(); loadUsers(1);
+}
+
+async function loadStats() {
+  const s = await api('/api/admin/stats');
+  document.getElementById('stats').innerHTML = `
+    ${statCard(s.totalUsers,'注册用户')}
+    ${statCard(s.activeToday,'今日活跃')}
+    ${statCard(s.newToday,'今日新增')}
+    ${statCard(s.totalRecords,'健康记录总数')}`;
+}
+function statCard(v, label){ return `<div class="stat"><b>${v}</b><span>${label}</span></div>`; }
+
+async function loadUsers(p) {
+  page = p || page;
+  const q = document.getElementById('search').value;
+  const r = await api(`/api/admin/users?page=${page}&q=${encodeURIComponent(q)}`);
+  const rows = r.users.map(u => `
+    <tr>
+      <td>${u.id}</td><td>${u.email}</td><td>${u.name||'—'}</td>
+      <td><span class="pill role">${u.role}</span></td>
+      <td><span class="pill ${u.status}">${u.status==='active'?'正常':'停用'}</span></td>
+      <td class="muted">${u.created_at}</td>
+      <td class="row">
+        <button class="btn-ghost" onclick="toggleStatus(${u.id},'${u.status==='active'?'disabled':'active'}')">${u.status==='active'?'停用':'启用'}</button>
+        <button class="btn-danger" onclick="delUser(${u.id})">删除</button>
+      </td>
+    </tr>`).join('');
+  document.getElementById('userRows').innerHTML = rows || '<tr><td colspan="7" class="muted">暂无用户</td></tr>';
+  document.getElementById('pageInfo').textContent = `共 ${r.total} 人 · 第 ${r.page} 页`;
+}
+function prevPage(){ if(page>1) loadUsers(page-1); }
+function nextPage(){ loadUsers(page+1); }
+
+async function toggleStatus(id, status){
+  if(!confirm('确认'+(status==='disabled'?'停用':'启用')+'该账号？')) return;
+  await api(`/api/admin/users/${id}/status`,{method:'PUT',body:JSON.stringify({status})});
+  loadUsers(page);
+}
+async function delUser(id){
+  if(!confirm('确认删除该用户？其档案与全部记录将一并清除，不可恢复。')) return;
+  await api(`/api/admin/users/${id}`,{method:'DELETE'});
+  loadUsers(page);
+}
+
+if (token) showConsole();
+</script>
+</body>
+</html>
