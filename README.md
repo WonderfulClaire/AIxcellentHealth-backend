@@ -9,8 +9,8 @@
 
 ## 技术栈
 
-- **Node.js + Express**（ESM）
-- **better-sqlite3**（开发 / 演示；schema 已按 Postgres 兼容编写，生产可平滑切换）
+- **Node.js + Express**（ESM），部署于 **Vercel Serverless**
+- **Neon Postgres** + **@neondatabase/serverless**（HTTP 驱动，免本地编译，开发 / 生产同一套云端库）
 - **bcryptjs**：密码加盐哈希
 - **jsonwebtoken**：登录态（Bearer Token）
 - 零前端框架依赖，管理后台为单文件 `public/admin.html`
@@ -36,8 +36,9 @@
 ```
 .
 ├── src/
-│   ├── server.js            # 入口：挂载路由、CORS、静态后台
-│   ├── db.js                # SQLite 连接 + 自动建表 + 初始化管理员
+│   ├── app.js               # Express 装配：路由、CORS、initDb 中间件、静态后台（无 listen）
+│   ├── server.js            # 本地入口：initDb 后 listen
+│   ├── db.js                # Neon Postgres 连接 + q/one 助手 + 自动建表 + 初始化管理员
 │   ├── dailyPushEngine.js   # 推送引擎：内容库 TIPS + 分段/匹配/轮转算法（纯逻辑可单测）
 │   ├── dailyPush.js         # 接入 DB 与邮件：getTodayTip / runDailyPush
 │   ├── middleware/auth.js   # authenticate / requireAdmin / JWT_SECRET
@@ -50,6 +51,8 @@
 ├── scripts/dailyPush.js     # 独立运行器（crontab / timer 调用）
 ├── tests/                   # 引擎单测 + 端到端冒烟测试
 ├── .github/workflows/daily-push.yml  # 定时触发邮件推送（GitHub Actions 模板）
+├── api/index.js            # Vercel Serverless 入口（export default app）
+├── vercel.json             # Vercel 部署配置（framework:null + /api 重写）
 ├── schema.sql              # Postgres 兼容结构参考
 ├── .env.example            # 环境变量模板（含 SMTP_*）
 └── package.json
@@ -61,7 +64,7 @@
 
 ```bash
 npm install
-cp .env.example .env          # 按需修改，尤其 JWT_SECRET / 管理员账号
+cp .env.example .env          # 必填 DATABASE_URL（Neon 连接串）与 JWT_SECRET / 管理员账号
 npm start                     # 默认 http://localhost:3000
 # 管理后台：http://localhost:3000/admin.html
 # 探活：    GET /api/health
@@ -71,35 +74,31 @@ npm start                     # 默认 http://localhost:3000
 
 ---
 
-## 部署（免费、可扩展）
+## 部署（Vercel Serverless + Neon，全免费无需信用卡）
 
-### Railway / Render（推荐，免费层）
+当前生产环境：**https://aixcellent-backend.vercel.app**（管理后台 `/admin.html`）
 
-1. 新建 Web Service，关联本仓库。
-2. Build：`npm install`；Start：`npm start`。
-3. 在平台环境变量中添加：
-   - `PORT`（平台自动注入，无需手填）
+1. 在 [Neon](https://neon.tech) 创建免费 Postgres 项目，拿到带连接池的 `DATABASE_URL`（`...-pooler...neon.tech/neondb?sslmode=require`）。
+2. `vercel link` 关联项目，在 Vercel 项目环境变量（Production）中添加：
+   - `DATABASE_URL`：Neon 连接串
    - `JWT_SECRET`：≥32 位随机串
    - `ADMIN_EMAIL` / `ADMIN_PASSWORD`：初始管理员
-   - `DB_PATH`：指向持久卷，例如 `/data/aixcellent.db`（**务必使用平台持久存储，否则重启丢数据**）
    - `CORS_ORIGIN`：你的前端域名，如 `https://wonderfulclaire.github.io`（生产请收敛，不要用 `*`）
-4. 部署完成后访问 `https://<你的域名>/admin.html` 即管理后台。
+3. `vercel --prod` 部署。首次请求时自动建表并创建管理员（initDb 中间件 + 单例缓存）。
+4. 注意 `vercel.json` 中的 `"framework": null` 不可删除，否则 Vercel CLI 会把 Express 误识别为框架并重写配置导致构建失败。
 
 ### 扩展性说明（为什么"很多人用不崩"）
 
-- 前端是 CDN 静态资源，天然抗高并发；后端是无状态 API，可多实例横向扩容。
-- SQLite 适合中小规模；用户量上来后切换到托管 Postgres（见下），由数据库承担并发，API 层继续无状态扩容。
+- 前端是 CDN 静态资源，天然抗高并发；后端是无状态 Serverless 函数，按请求自动扩缩容。
+- 数据层为托管 Postgres（Neon），连接池 + HTTP 驱动适配 Serverless 短连接模型；数据持久化与并发由数据库承担。
 - 所有写操作按 `user_id` 隔离，管理接口强制 `requireAdmin`，不存在越权读取他人数据。
 
 ---
 
-## 切换到托管 Postgres（生产）
+## 数据库说明
 
-1. 将 `src/db.js` 中的 better-sqlite3 换成 `pg`（`Pool`），SQL 基本兼容（见 `schema.sql`）。
-2. 用环境变量 `DATABASE_URL` 注入连接串。
-3. 建表语句已在 `schema.sql` 给出（SERIAL / TIMESTAMPTZ / JSONB）。
-
-> 为降低改动，建议封装一个 `db.query(sql, params)` 适配层，业务代码保持不变。
+- 建表语句内置于 `src/db.js`（启动 / 冷启动时 `CREATE TABLE IF NOT EXISTS` 幂等执行），`schema.sql` 为结构参考。
+- 驱动为 `@neondatabase/serverless`（HTTP 协议），无需本地编译；如需迁到自建 Postgres，换成 `pg` 的 `Pool.query` 即可，`src/db.js` 已封装 `q(sql, params)` / `one(sql, params)` 适配层，业务代码无需改动。
 
 ---
 

@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import db from '../db.js';
+import { q, one } from '../db.js';
 import { JWT_SECRET, authenticate } from '../middleware/auth.js';
 
 const router = Router();
@@ -14,7 +14,7 @@ function publicUser(u) {
   return { id: u.id, email: u.email, name: u.name, role: u.role, status: u.status };
 }
 
-router.post('/register', (req, res) => {
+router.post('/register', async (req, res) => {
   const { email, password, name } = req.body || {};
   if (!email || !password) {
     return res.status(400).json({ error: '邮箱和密码为必填项' });
@@ -23,26 +23,27 @@ router.post('/register', (req, res) => {
     return res.status(400).json({ error: '密码至少 6 位' });
   }
   const normalized = String(email).toLowerCase().trim();
-  if (db.prepare('SELECT id FROM users WHERE email = ?').get(normalized)) {
+  if (await one('SELECT id FROM users WHERE email = $1', [normalized])) {
     return res.status(409).json({ error: '该邮箱已注册' });
   }
   const hash = bcrypt.hashSync(password, 10);
-  const info = db
-    .prepare("INSERT INTO users (email, password_hash, name, role) VALUES (?, ?, ?, 'user')")
-    .run(normalized, hash, name ? String(name).trim() : null);
-  const token = jwt.sign({ sub: info.lastInsertRowid, role: 'user' }, JWT_SECRET, {
+  const row = await one(
+    "INSERT INTO users (email, password_hash, name, role) VALUES ($1, $2, $3, 'user') RETURNING id",
+    [normalized, hash, name ? String(name).trim() : null]
+  );
+  const token = jwt.sign({ sub: row.id, role: 'user' }, JWT_SECRET, {
     expiresIn: JWT_EXPIRES,
   });
-  res.status(201).json({ token, user: { id: info.lastInsertRowid, email: normalized, name: name || null, role: 'user' } });
+  res.status(201).json({ token, user: { id: row.id, email: normalized, name: name || null, role: 'user' } });
 });
 
-router.post('/login', (req, res) => {
+router.post('/login', async (req, res) => {
   const { email, password } = req.body || {};
   if (!email || !password) {
     return res.status(400).json({ error: '邮箱和密码为必填项' });
   }
   const normalized = String(email).toLowerCase().trim();
-  const user = db.prepare('SELECT * FROM users WHERE email = ?').get(normalized);
+  const user = await one('SELECT * FROM users WHERE email = $1', [normalized]);
   if (!user || !bcrypt.compareSync(password, user.password_hash)) {
     return res.status(401).json({ error: '邮箱或密码错误' });
   }
@@ -55,13 +56,13 @@ router.post('/login', (req, res) => {
   res.json({ token, user: publicUser(user) });
 });
 
-router.get('/me', (req, res) => {
+router.get('/me', async (req, res) => {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : null;
   if (!token) return res.status(401).json({ error: '未提供访问令牌' });
   try {
     const payload = jwt.verify(token, JWT_SECRET);
-    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(payload.sub);
+    const user = await one('SELECT * FROM users WHERE id = $1', [payload.sub]);
     if (!user) return res.status(404).json({ error: '用户不存在' });
     res.json({ user: publicUser(user) });
   } catch {
@@ -70,9 +71,9 @@ router.get('/me', (req, res) => {
 });
 
 // 自助注销：删除本人账号（profiles / daily_records 因 ON DELETE CASCADE 一并清除）
-router.delete('/me', (req, res) => {
+router.delete('/me', async (req, res) => {
   const u = req.user.sub;
-  db.prepare('DELETE FROM users WHERE id = ?').run(u);
+  await q('DELETE FROM users WHERE id = $1', [u]);
   res.json({ ok: true, deleted: u });
 });
 

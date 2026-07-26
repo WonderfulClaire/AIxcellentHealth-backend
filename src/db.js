@@ -1,109 +1,110 @@
-import Database from 'better-sqlite3';
-import path from 'node:path';
-import fs from 'node:fs';
+// 数据层：Neon Postgres（HTTP serverless 驱动，适配 Vercel 等无服务器环境）。
+// 由 better-sqlite3 迁移而来：所有查询改为异步；表结构见 schema.sql。
+import { neon } from '@neondatabase/serverless';
 import dotenv from 'dotenv';
 import bcrypt from 'bcryptjs';
 
 dotenv.config();
 
-const DB_PATH = process.env.DB_PATH || './data/aixcellent.db';
-fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+if (!process.env.DATABASE_URL) {
+  throw new Error('缺少环境变量 DATABASE_URL（Neon Postgres 连接串）');
+}
 
-const db = new Database(DB_PATH);
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
+const sql = neon(process.env.DATABASE_URL);
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+/** 参数化查询（$1..$n），返回行数组 */
+export async function q(text, params = []) {
+  return sql.query(text, params);
+}
+
+/** 参数化查询，返回第一行或 null */
+export async function one(text, params = []) {
+  const rows = await sql.query(text, params);
+  return rows[0] ?? null;
+}
+
+// ── 建表 + 默认管理员（幂等；serverless 冷启动时执行一次）──
+const DDL = [
+  `CREATE TABLE IF NOT EXISTS users (
+    id            SERIAL PRIMARY KEY,
     email         TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
     name          TEXT,
     role          TEXT NOT NULL DEFAULT 'user',
     status        TEXT NOT NULL DEFAULT 'active',
-    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-
-  CREATE TABLE IF NOT EXISTS profiles (
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`,
+  `CREATE TABLE IF NOT EXISTS profiles (
     user_id      INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-    height       REAL,
-    weight       REAL,
+    height       NUMERIC,
+    weight       NUMERIC,
     birth_year   INTEGER,
     sex          TEXT,
     goals        TEXT,
     restrictions TEXT,
-    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-
-  CREATE TABLE IF NOT EXISTS daily_records (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`,
+  // date 沿用 SQLite 时代的 'YYYY-MM-DD' 文本语义，避免时区/序列化差异影响前端
+  `CREATE TABLE IF NOT EXISTS daily_records (
+    id            SERIAL PRIMARY KEY,
     user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     date          TEXT NOT NULL,
-    sleep_hours   REAL,
+    sleep_hours   NUMERIC,
     stress_level  TEXT,
-    training_load REAL,
-    posture_score REAL,
+    training_load NUMERIC,
+    posture_score NUMERIC,
     diet_note     TEXT,
     energy_level  INTEGER,
     note          TEXT,
-    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (user_id, date)
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_records_user_date ON daily_records (user_id, date DESC);
-
-  -- 可穿戴设备汇总（手表/手环/Apple Watch 经快捷指令同步）
-  -- 每条 = 一天的可穿戴数据：心率 / 步数 / 睡眠 / 血氧 / HRV / 活动能量。
-  -- source: ble(网页蓝牙实时) | manual(手动录入) | import(文件导入) | apple_health(快捷指令同步)
-  CREATE TABLE IF NOT EXISTS wearable (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_records_user_date ON daily_records (user_id, date DESC)`,
+  `CREATE TABLE IF NOT EXISTS wearable (
+    id            SERIAL PRIMARY KEY,
     user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     date          TEXT NOT NULL,
     source        TEXT NOT NULL DEFAULT 'manual',
     device        TEXT,
-    resting_hr    REAL,
-    avg_hr        REAL,
-    max_hr        REAL,
+    resting_hr    NUMERIC,
+    avg_hr        NUMERIC,
+    max_hr        NUMERIC,
     steps         INTEGER,
-    sleep_hours   REAL,
-    spo2          REAL,
-    hrv           REAL,
-    active_energy REAL,
+    sleep_hours   NUMERIC,
+    spo2          NUMERIC,
+    hrv           NUMERIC,
+    active_energy NUMERIC,
     note          TEXT,
-    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (user_id, date, source)
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_wearable_user_date ON wearable (user_id, date DESC);
-
-  -- 每日健康小推送记录（站内卡片 / 邮件；按 user+date+channel 幂等去重）
-  CREATE TABLE IF NOT EXISTS daily_pushes (
-    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_wearable_user_date ON wearable (user_id, date DESC)`,
+  `CREATE TABLE IF NOT EXISTS daily_pushes (
+    id        SERIAL PRIMARY KEY,
     user_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     date      TEXT NOT NULL,
     tip_id    TEXT NOT NULL,
-    channel   TEXT NOT NULL DEFAULT 'inapp',  -- 'inapp' | 'email'
+    channel   TEXT NOT NULL DEFAULT 'inapp',
     title     TEXT,
     body      TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (user_id, date, channel)
-  );
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_pushes_user_date ON daily_pushes (user_id, date DESC)`,
+];
 
-  CREATE INDEX IF NOT EXISTS idx_pushes_user_date ON daily_pushes (user_id, date DESC);
-`);
-
-// 启动时确保默认管理员存在
-function ensureAdmin() {
+async function ensureAdmin() {
   const email = (process.env.ADMIN_EMAIL || 'admin@aixcellent.health').toLowerCase();
   const password = process.env.ADMIN_PASSWORD || 'change-me';
-  const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
+  const existing = await one('SELECT id FROM users WHERE email = $1', [email]);
   if (!existing) {
     const hash = bcrypt.hashSync(password, 10);
-    db.prepare(
-      "INSERT INTO users (email, password_hash, name, role) VALUES (?, ?, ?, 'admin')"
-    ).run(email, hash, '系统管理员');
+    await q(
+      "INSERT INTO users (email, password_hash, name, role) VALUES ($1, $2, $3, 'admin')",
+      [email, hash, '系统管理员']
+    );
     console.log(`[init] 已创建默认管理员账号: ${email}`);
   }
   // 安全提示：默认/弱管理员密码必须在部署时通过环境变量覆盖
@@ -113,6 +114,19 @@ function ensureAdmin() {
     );
   }
 }
-ensureAdmin();
 
-export default db;
+let _initPromise = null;
+
+/** 初始化数据库（建表 + 默认管理员）；进程内只执行一次，可安全并发调用 */
+export function initDb() {
+  if (!_initPromise) {
+    _initPromise = (async () => {
+      for (const stmt of DDL) await q(stmt);
+      await ensureAdmin();
+    })().catch((err) => {
+      _initPromise = null; // 失败允许下次重试
+      throw err;
+    });
+  }
+  return _initPromise;
+}

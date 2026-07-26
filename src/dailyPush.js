@@ -1,6 +1,6 @@
 // src/dailyPush.js
 // 把推送引擎接入数据库与邮件：站内卡片（按需生成、幂等去重）+ 邮件批量推送（可选 SMTP）。
-import db from './db.js';
+import { q, one } from './db.js';
 import {
   TIPS,
   toArr,
@@ -26,11 +26,12 @@ export function buildUserContext(userId, profile, recentRecords = []) {
 }
 
 /** 取近 7 天已推过的 tip id（用于去重，避免短期内重复） */
-function recentTipIds(userId, channel = 'inapp', days = 7) {
+async function recentTipIds(userId, channel = 'inapp', days = 7) {
   const since = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
-  const rows = db
-    .prepare('SELECT tip_id FROM daily_pushes WHERE user_id = ? AND channel = ? AND date >= ?')
-    .all(userId, channel, since);
+  const rows = await q(
+    'SELECT tip_id FROM daily_pushes WHERE user_id = $1 AND channel = $2 AND date >= $3',
+    [userId, channel, since]
+  );
   return new Set(rows.map((r) => r.tip_id));
 }
 
@@ -54,25 +55,29 @@ function resolvePushRow(row) {
  * 获取当前用户的"今日健康小推送"（站内卡片）。
  * 已生成过则直接返回，否则计算并落库（幂等）。无画像时退化为通用段。
  */
-export function getTodayTip(userId) {
+export async function getTodayTip(userId) {
   const today = todayStr();
-  const existing = db
-    .prepare('SELECT * FROM daily_pushes WHERE user_id = ? AND date = ? AND channel = ?')
-    .get(userId, today, 'inapp');
+  const existing = await one(
+    'SELECT * FROM daily_pushes WHERE user_id = $1 AND date = $2 AND channel = $3',
+    [userId, today, 'inapp']
+  );
   if (existing) return resolvePushRow(existing);
 
-  const profile = db.prepare('SELECT * FROM profiles WHERE user_id = ?').get(userId);
-  const records = db
-    .prepare('SELECT * FROM daily_records WHERE user_id = ? ORDER BY date DESC LIMIT 7')
-    .all(userId);
+  const profile = await one('SELECT * FROM profiles WHERE user_id = $1', [userId]);
+  const records = await q(
+    'SELECT * FROM daily_records WHERE user_id = $1 ORDER BY date DESC LIMIT 7',
+    [userId]
+  );
   const ctx = buildUserContext(userId, profile, records);
-  const exclude = recentTipIds(userId, 'inapp', 7);
+  const exclude = await recentTipIds(userId, 'inapp', 7);
   const tip = pickTipForUser(ctx, exclude) || TIPS.find((t) => t.segment === 'all') || TIPS[0];
 
-  db.prepare(
-    `INSERT OR IGNORE INTO daily_pushes (user_id, date, tip_id, channel, title, body)
-     VALUES (?, ?, ?, 'inapp', ?, ?)`
-  ).run(userId, today, tip.id, tip.title, tip.body);
+  await q(
+    `INSERT INTO daily_pushes (user_id, date, tip_id, channel, title, body)
+     VALUES ($1, $2, $3, 'inapp', $4, $5)
+     ON CONFLICT (user_id, date, channel) DO NOTHING`,
+    [userId, today, tip.id, tip.title, tip.body]
+  );
 
   return { ...tip, channel: 'inapp', date: today, pushId: null };
 }
@@ -141,39 +146,43 @@ async function sendEmailTip(user, tip) {
  */
 export async function runDailyPush() {
   const today = todayStr();
-  const users = db
-    .prepare("SELECT id, email, name FROM users WHERE status = 'active' AND email IS NOT NULL AND email != ''")
-    .all();
+  const users = await q(
+    "SELECT id, email, name FROM users WHERE status = 'active' AND email IS NOT NULL AND email != ''"
+  );
   let sent = 0;
   let skipped = 0;
   let failed = 0;
   const smtpEnabled = !!(await getTransporter());
 
   for (const u of users) {
-    const existing = db
-      .prepare('SELECT id FROM daily_pushes WHERE user_id = ? AND date = ? AND channel = ?')
-      .get(u.id, today, 'email');
+    const existing = await one(
+      'SELECT id FROM daily_pushes WHERE user_id = $1 AND date = $2 AND channel = $3',
+      [u.id, today, 'email']
+    );
     if (existing) {
       skipped++;
       continue;
     }
-    const profile = db.prepare('SELECT * FROM profiles WHERE user_id = ?').get(u.id);
-    const records = db
-      .prepare('SELECT * FROM daily_records WHERE user_id = ? ORDER BY date DESC LIMIT 7')
-      .all(u.id);
+    const profile = await one('SELECT * FROM profiles WHERE user_id = $1', [u.id]);
+    const records = await q(
+      'SELECT * FROM daily_records WHERE user_id = $1 ORDER BY date DESC LIMIT 7',
+      [u.id]
+    );
     const ctx = buildUserContext(u.id, profile, records);
     const exclude = new Set([
-      ...recentTipIds(u.id, 'inapp', 7),
-      ...recentTipIds(u.id, 'email', 7),
+      ...(await recentTipIds(u.id, 'inapp', 7)),
+      ...(await recentTipIds(u.id, 'email', 7)),
     ]);
     const tip =
       pickTipForUser(ctx, exclude) || TIPS.find((t) => t.segment === 'all') || TIPS[0];
 
     // 先落库（幂等），再尝试发送
-    db.prepare(
-      `INSERT OR IGNORE INTO daily_pushes (user_id, date, tip_id, channel, title, body)
-       VALUES (?, ?, ?, 'email', ?, ?)`
-    ).run(u.id, today, tip.id, tip.title, tip.body);
+    await q(
+      `INSERT INTO daily_pushes (user_id, date, tip_id, channel, title, body)
+       VALUES ($1, $2, $3, 'email', $4, $5)
+       ON CONFLICT (user_id, date, channel) DO NOTHING`,
+      [u.id, today, tip.id, tip.title, tip.body]
+    );
 
     if (!smtpEnabled) {
       skipped++; // 未配置 SMTP：记录意图但不发送
